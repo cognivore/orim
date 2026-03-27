@@ -40,7 +40,7 @@ pocket subdomain. The two TLS lifecycles never interfere.
          │           ALPN-01   │        │  HTTP-01 or ALPN-01
          │          (for us)   │        │  (for them, independently)
          ▼                     ▼        ▼
-  ┌────────────────────────────────┐  ┌───────────────────────────┐
+  ┌────────────────────────────────┐  ┌────────────────────────────┐
   │  ICENODE node                  │  │  Customer origin           │
   │                                │  │  origin.customer.com       │
   │  ┌──────────┐                  │  │  (pocket subdomain)        │
@@ -48,7 +48,7 @@ pocket subdomain. The two TLS lifecycles never interfere.
   │  │  :443    │ for public domain│  │  Own cert, own lifecycle   │
   │  │  :80     │                  │  │  Only ICENODE talks to it  │
   │  └────┬─────┘                  │  │                            │
-  │       │                        │  └──────────▲────────────────┘
+  │       │                        │  └──────────▲─────────────────┘
   │  ┌────▼─────┐                  │             │
   │  │classifier│                  │             │
   │  │ :4000    │                  │             │
@@ -161,11 +161,66 @@ orim/
 - Has its own TLS cert (Let's Encrypt via ALPN-01 or HTTP-01)
 
 **Step 6: Verify** (adapt from melira `deploy.sh` step 7)
+
+Classification routing:
 - `curl -H "User-Agent: Mozilla/5.0" https://orim.fere.me/` → "This is the real origin"
 - `curl -H "User-Agent: GPTBot/1.0" https://orim.fere.me/` → corpus HTML
 - `curl -H "User-Agent: ChatGPT-User" https://orim.fere.me/` → "This is the real origin" (live agent passthrough)
-- Check both certs: `echo | openssl s_client -connect orim.fere.me:443` and `echo | openssl s_client -connect origin.orim.fere.me:443` show different issuers/serials
-- Wait for cert renewal window, confirm both renew independently
+
+TLS independence — confirm different certs on each domain:
+```bash
+echo | openssl s_client -connect orim.fere.me:443 2>/dev/null | openssl x509 -noout -serial -issuer -dates
+echo | openssl s_client -connect origin.orim.fere.me:443 2>/dev/null | openssl x509 -noout -serial -issuer -dates
+# Serials MUST differ. Issuers should both be Let's Encrypt but with different serial numbers.
+# notBefore/notAfter timestamps will differ because they were issued at different times.
+```
+
+TLS independence — prove renewal doesn't interfere. Use Let's Encrypt staging
+(`https://acme-staging-v02.api.letsencrypt.org/directory`) for this so we don't
+hit production rate limits. Staging certs are not trusted by browsers but are
+real ACME issuance with the same protocol. Steps:
+
+1. Configure both Caddy instances to use the LE staging CA:
+   ```caddyfile
+   {
+     acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+   }
+   ```
+
+2. Issue initial certs for both domains. Record serials:
+   ```bash
+   SERIAL_PUBLIC=$(echo | openssl s_client -connect orim.fere.me:443 2>/dev/null | openssl x509 -noout -serial)
+   SERIAL_ORIGIN=$(echo | openssl s_client -connect origin.orim.fere.me:443 2>/dev/null | openssl x509 -noout -serial)
+   echo "Public: $SERIAL_PUBLIC  Origin: $SERIAL_ORIGIN"
+   ```
+
+3. Force-renew ONLY the ICENODE side (public domain) by deleting its cert from
+   Caddy's storage and reloading. The origin cert must remain untouched:
+   ```bash
+   # On the ICENODE Caddy: delete the cert for the public domain from storage
+   # (exact path depends on storage backend — filesystem or GCS)
+   # Then reload Caddy to trigger re-issuance:
+   caddy reload --config /etc/caddy/Caddyfile
+
+   # Wait for new cert (watch Caddy logs for "certificate obtained")
+   # Then check: public serial changed, origin serial unchanged
+   SERIAL_PUBLIC_NEW=$(echo | openssl s_client -connect orim.fere.me:443 2>/dev/null | openssl x509 -noout -serial)
+   SERIAL_ORIGIN_SAME=$(echo | openssl s_client -connect origin.orim.fere.me:443 2>/dev/null | openssl x509 -noout -serial)
+   echo "Public changed: $SERIAL_PUBLIC → $SERIAL_PUBLIC_NEW"
+   echo "Origin unchanged: $SERIAL_ORIGIN = $SERIAL_ORIGIN_SAME"
+   ```
+
+4. Do the reverse: force-renew the origin cert, confirm the public cert is untouched.
+
+5. Switch both back to production LE CA before going live:
+   ```caddyfile
+   {
+     # Remove acme_ca line — Caddy defaults to production Let's Encrypt
+   }
+   ```
+
+This proves the two TLS lifecycles are fully independent: renewing one side
+has zero effect on the other. The HTTP-01 multiplexing hack is eliminated.
 
 ### What to contribute back to darksteel-forge
 
