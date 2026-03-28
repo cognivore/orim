@@ -1,0 +1,52 @@
+{
+	auto_https off
+	admin off
+}
+
+# ICENODE proxy — the sole entry point for all traffic.
+# Pings iceout (mock classifier) via forward_auth, copies the
+# classification header back, then routes based on verdict.
+:8080 {
+	forward_auth localhost:4000 {
+		uri /classify
+		copy_headers X-Traffic-Class
+	}
+
+	@scraper header X-Traffic-Class scraper
+	@human header X-Traffic-Class human
+
+	handle @scraper {
+		root * test/corpus
+		file_server
+	}
+
+	handle @human {
+		reverse_proxy localhost:9000
+	}
+
+	handle {
+		respond "unclassified" 502
+	}
+}
+
+# Mock iceout — classifies by User-Agent and returns the verdict
+# as a response header.  forward_auth copies it to the original
+# request so Caddy can route on it.
+:4000 {
+	@scraper header_regexp User-Agent "(?i)(GPTBot|bingbot|Googlebot|anthropic-ai|ClaudeBot|CCBot|Bytespider)"
+
+	handle @scraper {
+		header X-Traffic-Class scraper
+		respond "" 200
+	}
+
+	handle {
+		header X-Traffic-Class human
+		respond "" 200
+	}
+}
+
+# Mock customer origin — stands in for origin.customer.com.
+:9000 {
+	respond "This is the real origin" 200
+}

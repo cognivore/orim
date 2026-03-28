@@ -1,0 +1,49 @@
+{
+	email infra@geosurge.ai
+}
+
+# ICENODE proxy — terminates TLS for the public domain, pings iceout
+# for classification, then routes based on the verdict.
+orim.fere.me {
+	forward_auth localhost:4000 {
+		uri /classify
+		copy_headers X-Traffic-Class X-Response-Strategy
+	}
+
+	@scraper header X-Traffic-Class known-scraper
+
+	handle @scraper {
+		root * /var/www/corpus
+		file_server
+	}
+
+	handle {
+		reverse_proxy https://origin.orim.fere.me {
+			header_up Host {upstream_hostport}
+		}
+	}
+}
+
+# Mock customer origin — separate TLS cert, independent lifecycle.
+origin.orim.fere.me {
+	respond "This is the real origin" 200
+}
+
+# Mock iceout classifier — matches real iceout's header contract
+# (X-Traffic-Class / X-Response-Strategy) so the real binary is
+# a drop-in replacement.
+:4000 {
+	@scraper header_regexp User-Agent "(?i)(GPTBot|bingbot|Googlebot|anthropic-ai|ClaudeBot|CCBot|Bytespider)"
+
+	handle @scraper {
+		header X-Traffic-Class known-scraper
+		header X-Response-Strategy serve-corpus
+		respond "" 200
+	}
+
+	handle {
+		header X-Traffic-Class known-human-browser
+		header X-Response-Strategy passthrough
+		respond "" 200
+	}
+}

@@ -1,0 +1,7 @@
+{
+  "externalIp": "35.234.132.162",
+  "project": "outland-dev-1",
+  "zone": "europe-west2-c",
+  "vmName": "orim-proxy",
+  "machineType": "e2-micro"
+}
